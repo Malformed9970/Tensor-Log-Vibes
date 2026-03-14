@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tensor Log Vibes</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Header Container -->
+        <header class="glass-header">
+            <div class="header-content">
+                <div class="logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <h1>Tensor Log Vibes</h1>
+                </div>
+
+                <div class="file-upload-container">
+                    <input type="file" id="logFileInput" accept=".lua,.txt,.log" multiple class="hidden-input">
+                    <label for="logFileInput" class="btn primary-btn pulse-on-hover">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        Upload Encounter Logs
+                    </label>
+                    <span id="fileCountIndicator" class="file-count">0 files loaded</span>
+                </div>
+            </div>
+
+            <!-- Global Controls -->
+            <div class="controls-panel">
+                <div class="search-box">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input type="text" id="globalSearch" placeholder="Search events, names, IDs...">
+                    <label class="regex-toggle" title="Use Regular Expression">
+                        <input type="checkbox" id="regexToggle"> Regex
+                    </label>
+                </div>
+
+                <div class="timeline-container" id="timelineContainer" style="display: none;">
+                    <div class="timeline-visualizer" id="timelineVisualizer">
+                        <canvas id="timelineCanvas"></canvas>
+                        <div id="timelineBrush" class="brush-overlay">
+                            <div class="brush-handle left" id="brushHandleLeft"></div>
+                            <div class="brush-handle right" id="brushHandleRight"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="time-range-box">
+                    <input type="number" id="minTimeInput" placeholder="Min Time" min="0" step="0.1">
+                    <span>-</span>
+                    <input type="number" id="maxTimeInput" placeholder="Max Time" min="0" step="0.1">
+                </div>
+
+                <div class="filters-group">
+                    <div class="custom-select" id="eventTypeSelectContainer">
+                        <div class="select-selected" id="eventTypeSelectText">Event Types: All</div>
+                        <div class="select-items select-hide" id="eventTypeDropdown">
+                            <div class="select-search-container">
+                                <input type="text" id="eventTypeSearch" placeholder="Search events..."
+                                    class="select-search-input">
+                                <div class="select-actions">
+                                    <button class="btn secondary-btn"
+                                        onclick="toggleAllCheckboxes('eventTypeOptionsContainer', activeFilters.types, true)">Select
+                                        All</button>
+                                    <button class="btn secondary-btn"
+                                        onclick="toggleAllCheckboxes('eventTypeOptionsContainer', activeFilters.types, false)">Deselect
+                                        All</button>
+                                </div>
+                            </div>
+                            <div class="select-options" id="eventTypeOptionsContainer">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="custom-select" id="entitySelectContainer">
+                        <div class="select-selected" id="entitySelectText">Entities: All</div>
+                        <div class="select-items select-hide" id="entityDropdown">
+                            <div class="select-search-container">
+                                <input type="text" id="entitySearch" placeholder="Search entities..."
+                                    class="select-search-input">
+                                <div class="select-actions">
+                                    <button class="btn secondary-btn"
+                                        onclick="toggleAllCheckboxes('entityOptionsContainer', activeFilters.entities, true)">All</button>
+                                    <button class="btn secondary-btn"
+                                        onclick="toggleAllCheckboxes('entityOptionsContainer', activeFilters.entities, false)">None</button>
+                                    <button class="btn secondary-btn" id="selectPlayersBtn"
+                                        title="Select known players (ContentID 0)">Players Only</button>
+                                    <button class="btn secondary-btn" id="selectNonPlayersBtn"
+                                        title="Select everything EXCEPT players">Non-Players</button>
+                                </div>
+                            </div>
+                            <div class="select-options" id="entityOptionsContainer">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="actions-group">
+                    <div class="custom-col-box">
+                        <input type="text" id="customColInput" placeholder="Add new Column...">
+                        <button id="addCustomColBtn" class="btn secondary-btn" title="Add Column">+</button>
+                    </div>
+                    <button id="exportCsvBtn" class="btn secondary-btn" title="Export to CSV">CSV</button>
+                    <button id="exportJsonBtn" class="btn secondary-btn" title="Export to JSON">JSON</button>
+                </div>
+
+                <div class="stats-counter">
+                    <span id="showingCount">0</span> / <span id="totalCount">0</span> events
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="content-area">
+            <div id="loader" class="loader-container hidden">
+                <div class="spinner"></div>
+                <p>Parsing logs... <span id="parseProgress">0%</span></p>
+            </div>
+
+            <div id="emptyState" class="empty-state">
+                <div class="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M2 12h4l3-9 5 18 3-9h5" />
+                    </svg>
+                </div>
+                <h2>No Logs Loaded</h2>
+                <p>Upload log files to start analyzing parser data.</p>
+                <div class="keyboard-hint">Built on pure vibes :3</div>
+            </div>
+
+            <div class="table-container hidden" id="tableContainer">
+                <table class="event-table" id="eventTable">
+                    <thead>
+                        <tr id="tableHeaderRow">
+                            <th class="col-pin">Pin</th>
+                            <th class="col-file">File</th>
+                            <th class="col-time">Time</th>
+                            <th class="col-time-delta" title="Time since previous visible event">Δ Time</th>
+                            <th class="col-type">Event Type</th>
+                            <th class="col-source">Source Name/ID</th>
+                            <th class="col-target">Target Name/ID</th>
+                            <!-- Dynamic Columns will be inserted here -->
+                            <th class="col-details">Details / Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pinnedTableBody">
+                    </tbody>
+                    <tbody id="eventTableBody">
+                        <!-- Rows populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal for JSON / Complex Data -->
+    <div id="dataModal" class="modal hidden">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3 id="modalTitle">Event Details</h3>
+                <button class="close-btn" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre><code id="modalCodePayload" class="language-lua"></code></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
