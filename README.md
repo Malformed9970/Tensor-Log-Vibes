@@ -1,5 +1,6 @@
 # Tensor-Log-Vibes
 TensorReactions Log Parser
+
 Simply extract the folder and run index.html
 
 - String and Regex Search
@@ -10,3 +11,5 @@ Simply extract the folder and run index.html
 - Pin events for comparison
 - Custom Event Columns, type in the name and it should work eg. Entity XYZH wasVisible
 - Just click around and try things, it's pretty intuitive
+  
+![Preview](image.png)
