@@ -1,3 +1,9 @@
+// ============================================================================
+// Tensor Log Vibes 2 — core: parsing, filtering, event table, tabs
+// analysis.js (lifecycle / compare / inspector / summary) and replay.js
+// (arena replay) build on the state exposed here.
+// ============================================================================
+
 // DOM Elements
 const fileInput = document.getElementById('logFileInput');
 const fileCountIndicator = document.getElementById('fileCountIndicator');
@@ -31,6 +37,10 @@ const entitySelect = document.getElementById('entitySelectText');
 const entitySearch = document.getElementById('entitySearch');
 const entityOptionsContainer = document.getElementById('entityOptionsContainer');
 
+const calcColDropdown = document.getElementById('calcColDropdown');
+const calcColSelect = document.getElementById('calcColSelectText');
+const calcColOptionsContainer = document.getElementById('calcColOptionsContainer');
+
 const dataModal = document.getElementById('dataModal');
 const closeModal = document.getElementById('closeModal');
 const modalCodePayload = document.getElementById('modalCodePayload');
@@ -38,6 +48,7 @@ const modalCodePayload = document.getElementById('modalCodePayload');
 // Application State
 let parsedEvents = [];
 let filteredEvents = [];
+let fileMetas = [];               // per-file header metadata from the worker
 let pinnedEvents = new Set();
 let uniqueEventTypes = new Set();
 let uniqueEntities = new Set(); // names and IDs combined
@@ -48,20 +59,106 @@ let activeFilters = {
     useRegex: false,
     types: new Set(),
     entities: new Set(),
+    files: new Set(),             // pull-summary card filter
     minTime: null,
     maxTime: null
 };
 
 let customColumns = []; // Array of pinned payload keys
+let calcColumns = [];   // Array of computed column names (see COMPUTED_COLUMNS)
 let baseColumns = ['pin', 'file', 'time', 'timeDelta', 'realTime', 'realTimeDelta', 'type', 'source', 'target', 'details'];
 let columnOrder = [...baseColumns];
 let tableLayoutLocked = false;
 let columnWidthsMap = {};
 
+// ---------------------------------------------------------------------------
+// Computed ("calc") columns — derived from the structured positions the
+// worker extracts from every "X XYZH" payload key.
+// ---------------------------------------------------------------------------
+const SOURCE_ROLES = ['Entity', 'Caster', 'Source', 'Owner', 'Primary Entity'];
+const TARGET_ROLES = ['Target', 'Entity 2', 'Secondary Entity'];
+
+function getPosByRoles(ev, roles) {
+    if (!ev.positions) return null;
+    for (const role of roles) {
+        const p = ev.positions.find(p => p.who === role);
+        if (p) return p;
+    }
+    return null;
+}
+
+function getArenaCenter(file) {
+    const a = window.TLV && TLV.byFile && TLV.byFile.get(file);
+    return (a && a.center) ? a.center : { x: 100, z: 100 };
+}
+
+const COMPUTED_COLUMNS = {
+    'Center Dist': ev => {
+        const p = getPosByRoles(ev, SOURCE_ROLES);
+        if (!p) return '-';
+        const c = getArenaCenter(ev.file);
+        return Math.hypot(p.x - c.x, p.z - c.z).toFixed(2);
+    },
+    'Quadrant': ev => {
+        const p = getPosByRoles(ev, SOURCE_ROLES);
+        if (!p) return '-';
+        const c = getArenaCenter(ev.file);
+        const dx = p.x - c.x, dz = p.z - c.z;
+        if (Math.abs(dx) < 0.5 && Math.abs(dz) < 0.5) return 'Center';
+        // FFXIV: -Z is North. Octant by angle.
+        const ang = Math.atan2(dx, -dz) * 180 / Math.PI; // 0 = N, 90 = E
+        const octants = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        return octants[Math.round(((ang + 360) % 360) / 45) % 8];
+    },
+    'Src→Tgt Dist': ev => {
+        const s = getPosByRoles(ev, SOURCE_ROLES);
+        const t = getPosByRoles(ev, TARGET_ROLES);
+        if (!s || !t) return '-';
+        return Math.hypot(s.x - t.x, s.z - t.z).toFixed(2);
+    },
+    'Tgt Quadrant': ev => {
+        const p = getPosByRoles(ev, TARGET_ROLES);
+        if (!p) return '-';
+        const c = getArenaCenter(ev.file);
+        const dx = p.x - c.x, dz = p.z - c.z;
+        if (Math.abs(dx) < 0.5 && Math.abs(dz) < 0.5) return 'Center';
+        const ang = Math.atan2(dx, -dz) * 180 / Math.PI;
+        const octants = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        return octants[Math.round(((ang + 360) % 360) / 45) % 8];
+    }
+};
+
 // --- Initialization ---
 function init() {
     setupEventListeners();
+    setupTabs();
+    populateCalcColDropdown();
 }
+
+function setupTabs() {
+    const tabBar = document.getElementById('tabBar');
+    tabBar.addEventListener('click', e => {
+        const btn = e.target.closest('.tab-btn');
+        if (!btn) return;
+        switchTab(btn.dataset.tab);
+    });
+}
+
+let currentTab = 'events';
+function switchTab(name) {
+    currentTab = name;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.getElementById('eventsView').classList.toggle('hidden', name !== 'events');
+    document.getElementById('replayView').classList.toggle('hidden', name !== 'replay');
+    document.getElementById('reactionsView').classList.toggle('hidden', name !== 'reactions');
+    document.getElementById('rotationView').classList.toggle('hidden', name !== 'rotation');
+    document.body.classList.toggle('non-events-tab', name !== 'events');
+
+    if (window.TLVReplay) TLVReplay.onTabChange(name === 'replay');
+    if (window.TLVAnalysis) TLVAnalysis.onTabChange(name);
+    if (window.TLVRotation) TLVRotation.onTabChange(name === 'rotation');
+}
+window.switchTab = switchTab;
 
 function setupEventListeners() {
     fileInput.addEventListener('change', handleFilesSelect);
@@ -139,9 +236,17 @@ function setupEventListeners() {
         this.classList.toggle('select-arrow-active');
     });
 
+    calcColSelect.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeAllSelects(this);
+        calcColDropdown.classList.toggle('select-hide');
+        this.classList.toggle('select-arrow-active');
+    });
+
     // Prevent dropdown from closing when interacting inside
     eventTypeDropdown.addEventListener('click', e => e.stopPropagation());
     entityDropdown.addEventListener('click', e => e.stopPropagation());
+    calcColDropdown.addEventListener('click', e => e.stopPropagation());
 
     // Added Action Handlers
     const selectPlayersBtn = document.getElementById('selectPlayersBtn');
@@ -191,6 +296,49 @@ function setupEventListeners() {
         });
     }
 
+    // Pet names come from the analysis layer's behavioral detection
+    function getPetNameSet() {
+        const pets = new Set();
+        if (window.TLV && TLV.byFile) {
+            for (const [, A] of TLV.byFile) {
+                if (A.petNames) A.petNames.forEach(n => pets.add(n));
+            }
+        }
+        return pets;
+    }
+
+    const selectPetsBtn = document.getElementById('selectPetsBtn');
+    if (selectPetsBtn) {
+        selectPetsBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            const pets = getPetNameSet();
+            const checkboxes = entityOptionsContainer.querySelectorAll('.select-item input[type="checkbox"]');
+            activeFilters.entities.clear();
+            checkboxes.forEach(cb => {
+                cb.checked = pets.has(cb.value);
+                if (cb.checked) activeFilters.entities.add(cb.value);
+            });
+            updateSelectText();
+            applyFiltersAndRender();
+        });
+    }
+
+    const selectEnemiesBtn = document.getElementById('selectEnemiesBtn');
+    if (selectEnemiesBtn) {
+        selectEnemiesBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            const pets = getPetNameSet();
+            const checkboxes = entityOptionsContainer.querySelectorAll('.select-item input[type="checkbox"]');
+            activeFilters.entities.clear();
+            checkboxes.forEach(cb => {
+                cb.checked = !playerEntities.has(cb.value) && !pets.has(cb.value);
+                if (cb.checked) activeFilters.entities.add(cb.value);
+            });
+            updateSelectText();
+            applyFiltersAndRender();
+        });
+    }
+
     // Search within dropdowns
     eventTypeSearch.addEventListener('input', (e) => filterDropdownOptions(e.target.value, eventTypeOptionsContainer));
     entitySearch.addEventListener('input', (e) => filterDropdownOptions(e.target.value, entityOptionsContainer));
@@ -207,12 +355,52 @@ function setupEventListeners() {
         }
     });
 
+    // Row double-click → jump the replay to that moment
+    eventTableBody.addEventListener('dblclick', e => {
+        const tr = e.target.closest('tr[data-ev-id]');
+        if (!tr) return;
+        const ev = parsedEvents[parseInt(tr.dataset.evId, 10)];
+        if (ev && !isNaN(ev.tNum) && window.TLVReplay) {
+            TLVReplay.jumpTo(ev.file, ev.tNum);
+        }
+    });
+
     closeModal.addEventListener('click', () => dataModal.classList.add('hidden'));
     window.addEventListener('click', (e) => {
         if (e.target === dataModal) dataModal.classList.add('hidden');
     });
 
     renderTableHeaders();
+}
+
+function populateCalcColDropdown() {
+    calcColOptionsContainer.innerHTML = '';
+    Object.keys(COMPUTED_COLUMNS).forEach(name => {
+        const label = document.createElement('label');
+        label.className = 'select-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = name;
+        checkbox.checked = calcColumns.includes(name);
+        checkbox.onchange = function () {
+            if (this.checked) {
+                if (!calcColumns.includes(name)) {
+                    calcColumns.push(name);
+                    columnOrder.splice(columnOrder.length - 1, 0, `calc_${name}`);
+                }
+            } else {
+                calcColumns = calcColumns.filter(c => c !== name);
+                columnOrder = columnOrder.filter(c => c !== `calc_${name}`);
+            }
+            renderTableHeaders();
+            renderTable();
+        };
+        const span = document.createElement('span');
+        span.textContent = name;
+        label.appendChild(checkbox);
+        label.appendChild(span);
+        calcColOptionsContainer.appendChild(label);
+    });
 }
 
 function closeAllSelects(elmnt) {
@@ -249,9 +437,82 @@ const workerFunction = function () {
         return /^[0-9A-Fa-f]+$/.test(str);
     }
 
+    // Minimal Lua table literal parser for the multiline payload blocks the
+    // logger emits (nested tables, `key = value,` pairs, numbers / strings /
+    // booleans). Returns null when the block doesn't look parseable.
+    function parseLuaValue(raw) {
+        const v = raw.replace(/,$/, '').trim();
+        if (v === 'true') return true;
+        if (v === 'false') return false;
+        if (v === 'nil') return null;
+        if (/^-?\d+(\.\d+)?(e[-+]?\d+)?$/i.test(v)) return parseFloat(v);
+        const strMatch = v.match(/^"(.*)"$/);
+        if (strMatch) return strMatch[1];
+        return v;
+    }
+
+    function parseLuaBlock(lines, startIdx) {
+        // lines[startIdx] must be '{'
+        const obj = {};
+        let i = startIdx + 1;
+        while (i < lines.length) {
+            let line = lines[i].trim();
+            if (line === '}' || line === '},') return [obj, i];
+            const m = line.match(/^\[?"?([\w .\-]+)"?\]?\s*=\s*(.*)$/);
+            if (m) {
+                const key = m[1].trim();
+                const rest = m[2].trim();
+                if (rest === '' || rest === '{') {
+                    const braceIdx = rest === '{' ? i : i + 1;
+                    if (lines[braceIdx] && lines[braceIdx].trim().startsWith('{')) {
+                        const [child, endIdx] = parseLuaBlock(lines, braceIdx);
+                        obj[key] = child;
+                        i = endIdx;
+                    }
+                } else {
+                    obj[key] = parseLuaValue(rest);
+                }
+            }
+            i++;
+        }
+        return [obj, i];
+    }
+
+    function parseLuaPayload(text) {
+        try {
+            const lines = text.split('\n');
+            const start = lines.findIndex(l => l.trim() === '{');
+            if (start === -1) return null;
+            const [obj] = parseLuaBlock(lines, start);
+            return obj;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Extract structured positions from every "<Role> XYZH" payload key.
+    function extractPositions(eventObj) {
+        const positions = [];
+        for (const key in eventObj.payload) {
+            if (!key.endsWith('XYZH')) continue;
+            const role = key.slice(0, -5).trim(); // strip " XYZH"
+            const nums = eventObj.payload[key].trim().split(/\s+/).map(parseFloat);
+            if (nums.length < 4 || nums.some(isNaN)) continue;
+            positions.push({
+                who: role,
+                name: eventObj.payload[`${role} Name`] || '',
+                id: eventObj.payload[`${role} ID`] || '',
+                cid: eventObj.payload[`${role} ContentID`] || '',
+                x: nums[0], y: nums[1], z: nums[2], h: nums[3]
+            });
+        }
+        if (positions.length) eventObj.positions = positions;
+    }
+
     self.onmessage = async function (e) {
         const files = e.data.files;
         let parsedEvents = [];
+        let fileMetas = [];
         let uniqueEventTypes = new Set();
         let uniqueEntities = new Set();
         let playerEntities = new Set();
@@ -265,6 +526,9 @@ const workerFunction = function () {
             const text = await file.text();
             const lines = text.split('\n');
             const fileName = file.name;
+
+            const meta = { file: fileName, dutyName: '', dutyType: '', uid: '', mapID: '', recordedUtc: '', party: [], profiles: '', hasCombatStart: false };
+            fileMetas.push(meta);
 
             let currentMultilineEvent = null;
             let multilinePayload = [];
@@ -283,10 +547,59 @@ const workerFunction = function () {
                     multilinePayload.push(line);
                     if (line === '}') {
                         currentMultilineEvent.payloadRaw = multilinePayload.join('\n');
+                        currentMultilineEvent.payloadObj = parseLuaPayload(currentMultilineEvent.payloadRaw);
                         parsedEvents.push(currentMultilineEvent);
                         currentMultilineEvent = null;
                         multilinePayload = [];
                     }
+                    continue;
+                }
+
+                // File-header / meta lines
+                if (line.startsWith('[AnyoneCore]')) {
+                    const metaContent = line.substring('[AnyoneCore]'.length).trim();
+                    if (metaContent.startsWith('Pull metadata:')) {
+                        const fields = metaContent.substring('Pull metadata:'.length).split('|');
+                        fields.forEach(f => {
+                            const eq = f.indexOf('=');
+                            if (eq === -1) return;
+                            const k = f.substring(0, eq).trim();
+                            const v = f.substring(eq + 1).trim();
+                            if (k === 'dutyName') meta.dutyName = v;
+                            if (k === 'dutyType') meta.dutyType = v;
+                            if (k === 'uid') meta.uid = v;
+                            if (k === 'mapID') meta.mapID = v;
+                            if (k === 'recordedUtc') meta.recordedUtc = v;
+                        });
+                    } else if (metaContent.startsWith('Party:')) {
+                        meta.party = metaContent.substring('Party:'.length).split('|').map(s => s.trim()).filter(Boolean);
+                    } else if (metaContent.startsWith('Combat started')) {
+                        meta.hasCombatStart = true;
+                    } else if (metaContent.startsWith('Reaction profiles:')) {
+                        meta.profiles = metaContent.substring('Reaction profiles:'.length).trim();
+                    }
+                }
+
+                // Script debug lines: "[AnyoneCore]: [842.385] [DMU P4] Buff seen ..."
+                // Handled before the generic timestamp regex, which would
+                // otherwise mangle them into one unique event type per message.
+                const scriptLog = line.match(/^\[AnyoneCore\]:\s*\[([\d.]+)\]\s*(\[[^\]]+\])?\s*(.*)$/);
+                if (scriptLog) {
+                    const slType = 'Script Log' + (scriptLog[2] ? ' ' + scriptLog[2] : '');
+                    uniqueEventTypes.add(slType);
+                    parsedEvents.push({
+                        id: parsedEvents.length,
+                        file: fileName,
+                        time: scriptLog[1],
+                        realTime: '',      // script logs only carry the synced timestamp
+                        tNum: parseFloat(scriptLog[1]),
+                        rtNum: NaN,
+                        type: slType,
+                        sourceName: '', sourceId: '', targetName: '', targetId: '',
+                        payload: { 'Message': scriptLog[3] || '' },
+                        payloadRaw: line,
+                        isMultiline: false
+                    });
                     continue;
                 }
 
@@ -316,17 +629,41 @@ const workerFunction = function () {
 
                 if (eventType.startsWith('|')) eventType = eventType.substring(1).trim();
 
+                let reactionName = '';
+                let scriptLogMsg = '';
                 if (eventType.startsWith('AnyoneCore Log:')) {
                     eventType = 'AnyoneCore Log';
-                } else if (eventType.startsWith('[AnyoneCore] Combat started')) {
-                    eventType = '[AnyoneCore] Combat started';
+                } else if (eventType.startsWith(':')) {
+                    // Script debug lines: ": [842.385] [DMU P4] Buff seen player=..."
+                    // Collapse per tag so each message doesn't become its own type.
+                    const tagMatch = eventType.match(/^:\s*\[[\d.]+\]\s*(\[[^\]]+\])?\s*(.*)$/);
+                    if (tagMatch) {
+                        scriptLogMsg = tagMatch[2] || '';
+                        eventType = 'Script Log' + (tagMatch[1] ? ' ' + tagMatch[1] : '');
+                    } else {
+                        scriptLogMsg = eventType.substring(1).trim();
+                        eventType = 'Script Log';
+                    }
+                } else if (eventType.startsWith('LogSorter')) {
+                    eventType = 'LogSorter Config';
+                } else if (eventType.startsWith('Pull metadata:')) {
+                    eventType = 'Pull Metadata';
+                } else if (eventType.startsWith('Party:')) {
+                    eventType = 'Party List';
+                } else if (eventType.startsWith('Reaction profiles:')) {
+                    eventType = 'Reaction Profiles';
+                } else if (eventType.startsWith('Combat started')) {
+                    eventType = 'Combat started';
                 } else if (eventType.startsWith('[TimelineSync') || eventType.startsWith('TimelineSync')) {
                     eventType = 'TimelineSync';
                 } else if (eventType.startsWith('Queueing reaction')) {
+                    reactionName = eventType.substring('Queueing reaction'.length).trim();
                     eventType = 'Queueing reaction';
                 } else if (eventType.startsWith('Executed reaction')) {
+                    reactionName = eventType.substring('Executed reaction'.length).trim();
                     eventType = 'Executed reaction';
                 } else if (eventType.startsWith('Dequeueing stale reaction')) {
+                    reactionName = eventType.substring('Dequeueing stale reaction'.length).trim();
                     eventType = 'Dequeueing action';
                 } else if (eventType.startsWith('Loaded timeline profile')) {
                     eventType = 'Loaded timeline profile';
@@ -341,6 +678,10 @@ const workerFunction = function () {
                     file: fileName,
                     time: time,
                     realTime: realTime,
+                    tNum: parseFloat(time),
+                    // real time is only trustworthy when the line carried BOTH
+                    // brackets — the single-bracket fallback copies synced time
+                    rtNum: doubleMatch ? parseFloat(realTime) : NaN,
                     type: eventType,
                     sourceName: '',
                     sourceId: '',
@@ -350,6 +691,9 @@ const workerFunction = function () {
                     payloadRaw: line,
                     isMultiline: false
                 };
+                if (isNaN(eventObj.tNum)) eventObj.tNum = NaN;
+                if (reactionName) eventObj.reactionName = reactionName;
+                if (scriptLogMsg) eventObj.payload['Message'] = scriptLogMsg;
 
                 uniqueEventTypes.add(eventType);
 
@@ -392,6 +736,8 @@ const workerFunction = function () {
                     }
                 }
 
+                extractPositions(eventObj);
+
                 if (j + 1 < lines.length && lines[j + 1].trim() === '{') {
                     eventObj.isMultiline = true;
                     currentMultilineEvent = eventObj;
@@ -407,6 +753,7 @@ const workerFunction = function () {
         self.postMessage({
             type: 'done',
             parsedEvents,
+            fileMetas,
             uniqueEventTypes: Array.from(uniqueEventTypes),
             uniqueEntities: Array.from(uniqueEntities),
             playerEntities: Array.from(playerEntities)
@@ -421,10 +768,12 @@ async function handleFilesSelect(event) {
 
     fileCountIndicator.textContent = `${files.length} file(s) loaded`;
     parsedEvents = [];
+    fileMetas = [];
     pinnedEvents.clear();
     uniqueEventTypes.clear();
     uniqueEntities.clear();
     playerEntities.clear();
+    activeFilters.files.clear();
 
     showLoader(true);
     parseProgress.textContent = `0%`;
@@ -438,6 +787,7 @@ async function handleFilesSelect(event) {
             parseProgress.textContent = `${e.data.pct}%`;
         } else if (e.data.type === 'done') {
             parsedEvents = e.data.parsedEvents;
+            fileMetas = e.data.fileMetas;
             uniqueEventTypes = new Set(e.data.uniqueEventTypes);
             uniqueEntities = new Set(e.data.uniqueEntities);
             playerEntities = new Set(e.data.playerEntities);
@@ -447,6 +797,12 @@ async function handleFilesSelect(event) {
             applyFiltersAndRender();
             showLoader(false);
             renderTimeline();
+
+            // Build derived per-pull analysis (tracks, AOEs, reactions, ...)
+            if (window.TLVAnalysis) TLVAnalysis.build(parsedEvents, fileMetas);
+            if (window.TLVReplay) TLVReplay.onDataLoaded();
+            if (window.TLVRotation) TLVRotation.onDataLoaded();
+            document.body.classList.remove('no-data');
 
             worker.terminate();
             URL.revokeObjectURL(workerUrl);
@@ -521,6 +877,32 @@ function updateSelectText() {
     }
 }
 
+// Toggle an entity filter from outside (replay entity click)
+window.toggleEntityFilterExternal = function (nameOrId) {
+    if (activeFilters.entities.has(nameOrId)) {
+        activeFilters.entities.delete(nameOrId);
+    } else {
+        activeFilters.entities.add(nameOrId);
+    }
+    // Sync checkbox state if present
+    entityOptionsContainer.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.checked = activeFilters.entities.has(cb.value);
+    });
+    updateSelectText();
+    applyFiltersAndRender();
+};
+
+// Toggle a file filter (pull summary cards)
+window.toggleFileFilter = function (fileName) {
+    if (activeFilters.files.has(fileName)) {
+        activeFilters.files.delete(fileName);
+    } else {
+        activeFilters.files.add(fileName);
+    }
+    if (window.TLVAnalysis) TLVAnalysis.renderSummaryStrip();
+    applyFiltersAndRender();
+};
+
 function applyFiltersAndRender() {
     // Pre-compile Regex if needed to avoid O(N) compilations
     let compiledRegex = null;
@@ -539,6 +921,9 @@ function applyFiltersAndRender() {
     }
 
     filteredEvents = parsedEvents.filter(ev => {
+        // File filter (pull summary cards)
+        if (activeFilters.files.size > 0 && !activeFilters.files.has(ev.file)) return false;
+
         // Type filter (Multi)
         if (activeFilters.types.size > 0 && !activeFilters.types.has(ev.type)) return false;
 
@@ -606,6 +991,10 @@ function renderTableHeaders() {
         headerMap[`custom_${c}`] = `<th class="col-dynamic">${c} <button class="btn" style="padding:0px 4px;font-size:0.7rem;background:transparent;border:none;cursor:pointer" onclick="removeCustomCol('${c}')">&times;</button></th>`;
     });
 
+    calcColumns.forEach(c => {
+        headerMap[`calc_${c}`] = `<th class="col-dynamic col-calc">ƒ ${c} <button class="btn" style="padding:0px 4px;font-size:0.7rem;background:transparent;border:none;cursor:pointer" onclick="removeCalcCol('${c}')">&times;</button></th>`;
+    });
+
     tableHeaderRow.innerHTML = columnOrder.map(colId => {
         let htmlStr = headerMap[colId];
         if (htmlStr) {
@@ -666,7 +1055,7 @@ function initDraggableColumns() {
                 currentTargetCol.classList.add('drag-over');
             }
         }
-        // Deliberately NOT clearing currentTargetCol on empty space hovers 
+        // Deliberately NOT clearing currentTargetCol on empty space hovers
         // to prevent mouse-wobble from cancelling drops entirely.
     };
 
@@ -803,6 +1192,14 @@ window.removeCustomCol = function (colName) {
     renderTable();
 }
 
+window.removeCalcCol = function (colName) {
+    calcColumns = calcColumns.filter(c => c !== colName);
+    columnOrder = columnOrder.filter(c => c !== `calc_${colName}`);
+    populateCalcColDropdown();
+    renderTableHeaders();
+    renderTable();
+}
+
 window.togglePin = function (eventId) {
     if (pinnedEvents.has(eventId)) {
         pinnedEvents.delete(eventId);
@@ -826,6 +1223,55 @@ function renderTable() {
 
     tableContainer.scrollTop = 0;
     renderVirtualTable();
+}
+
+// Events that can be opened in the cast inspector
+function isInspectable(ev) {
+    return (ev.type === 'OnEntityCast' || ev.type === 'OnEntityChannel') &&
+        (ev.payload['Cast ID'] || ev.payload['Channel ID']);
+}
+
+function buildDataCells(ev, tdMap) {
+    // Custom Columns
+    customColumns.forEach(c => {
+        const td = document.createElement('td');
+        td.className = 'col-dynamic';
+        td.textContent = ev.payload[c] !== undefined ? ev.payload[c] : '-';
+        tdMap[`custom_${c}`] = td;
+    });
+
+    // Calculated Columns
+    calcColumns.forEach(c => {
+        const td = document.createElement('td');
+        td.className = 'col-dynamic col-calc';
+        const fn = COMPUTED_COLUMNS[c];
+        td.textContent = fn ? fn(ev) : '-';
+        tdMap[`calc_${c}`] = td;
+    });
+
+    // Details
+    const tdDetails = document.createElement('td');
+    tdDetails.className = 'col-details';
+
+    let inspectBtn = '';
+    if (isInspectable(ev)) {
+        inspectBtn = `<button class="payload-btn inspect-btn" title="Aggregate what follows this cast across all loaded pulls" onclick="TLVAnalysis.openInspectorFromEvent(${ev.id});event.stopPropagation();">🔍</button> `;
+    }
+
+    if (ev.isMultiline) {
+        tdDetails.innerHTML = `${inspectBtn}<span class="table-payload-preview">Lua Table Data</span>
+                              <button class="payload-btn" onclick="showPayloadModal(${ev.id})">View JSON</button>`;
+    } else {
+        let previewText = Object.entries(ev.payload)
+            .filter(([k, v]) => !k.includes('Name') && !k.includes('Entity ID') && !k.includes('Caster ID') && !k.includes('Target ID') && !customColumns.includes(k))
+            .map(([k, v]) => `<span style="color:var(--text-tertiary)">${k}:</span> ${v}`)
+            .join(' | ');
+
+        if (!previewText && !Object.keys(ev.payload).length) previewText = ev.payloadRaw;
+
+        tdDetails.innerHTML = `${inspectBtn}<div class="table-payload-preview" title="Click to view full event JSON" onclick="showPayloadModal(${ev.id})">${previewText}</div>`;
+    }
+    tdMap['details'] = tdDetails;
 }
 
 function renderVirtualTable() {
@@ -868,6 +1314,8 @@ function renderVirtualTable() {
 
     toRender.forEach(ev => {
         const tr = document.createElement('tr');
+        tr.dataset.evId = ev.id;
+        if (window.TLVsyncHighlightId === ev.id) tr.classList.add('sync-highlight');
         const tdMap = {};
 
         // Pin
@@ -955,32 +1403,7 @@ function renderVirtualTable() {
         }
         tdMap['target'] = tdTarget;
 
-        // Custom Columns
-        customColumns.forEach(c => {
-            const td = document.createElement('td');
-            td.className = 'col-dynamic';
-            td.textContent = ev.payload[c] !== undefined ? ev.payload[c] : '-';
-            tdMap[`custom_${c}`] = td;
-        });
-
-        // Details
-        const tdDetails = document.createElement('td');
-        tdDetails.className = 'col-details';
-
-        if (ev.isMultiline) {
-            tdDetails.innerHTML = `<span class="table-payload-preview">Lua Table Data</span>
-                                  <button class="payload-btn" onclick="showPayloadModal(${ev.id})">View JSON</button>`;
-        } else {
-            let previewText = Object.entries(ev.payload)
-                .filter(([k, v]) => !k.includes('Name') && !k.includes('Entity ID') && !k.includes('Caster ID') && !k.includes('Target ID') && !customColumns.includes(k))
-                .map(([k, v]) => `<span style="color:var(--text-tertiary)">${k}:</span> ${v}`)
-                .join(' | ');
-
-            if (!previewText && !Object.keys(ev.payload).length) previewText = ev.payloadRaw;
-
-            tdDetails.innerHTML = `<div class="table-payload-preview" title="Click to view full event JSON" onclick="showPayloadModal(${ev.id})">${previewText}</div>`;
-        }
-        tdMap['details'] = tdDetails;
+        buildDataCells(ev, tdMap);
 
         columnOrder.forEach(colId => {
             if (tdMap[colId]) tr.appendChild(tdMap[colId]);
@@ -1023,6 +1446,7 @@ function renderPinnedTable() {
     pEvents.forEach((ev, index) => {
         const tr = document.createElement('tr');
         tr.className = 'pinned-row';
+        tr.dataset.evId = ev.id;
         const topOffset = headerHeight + (index * ROW_HEIGHT);
         const tdMap = {};
 
@@ -1092,32 +1516,7 @@ function renderPinnedTable() {
         }
         tdMap['target'] = tdTarget;
 
-        // Custom Columns
-        customColumns.forEach(c => {
-            const td = document.createElement('td');
-            td.className = 'col-dynamic';
-            td.textContent = ev.payload[c] !== undefined ? ev.payload[c] : '-';
-            tdMap[`custom_${c}`] = td;
-        });
-
-        // Details
-        const tdDetails = document.createElement('td');
-        tdDetails.className = 'col-details';
-
-        if (ev.isMultiline) {
-            tdDetails.innerHTML = `<span class="table-payload-preview">Lua Table Data</span>
-                                  <button class="payload-btn" onclick="showPayloadModal(${ev.id})">View JSON</button>`;
-        } else {
-            let previewText = Object.entries(ev.payload)
-                .filter(([k, v]) => !k.includes('Name') && !k.includes('Entity ID') && !k.includes('Caster ID') && !k.includes('Target ID') && !customColumns.includes(k))
-                .map(([k, v]) => `<span style="color:var(--text-tertiary)">${k}:</span> ${v}`)
-                .join(' | ');
-
-            if (!previewText && !Object.keys(ev.payload).length) previewText = ev.payloadRaw;
-
-            tdDetails.innerHTML = `<div class="table-payload-preview" title="Click to view full event JSON" onclick="showPayloadModal(${ev.id})">${previewText}</div>`;
-        }
-        tdMap['details'] = tdDetails;
+        buildDataCells(ev, tdMap);
 
         columnOrder.forEach(colId => {
             if (tdMap[colId]) {
@@ -1143,6 +1542,7 @@ function getBadgeClass(type) {
     if (t.includes('casttarget')) return 'badge-casttarget';
     if (t.includes('cast')) return 'badge-cast';
     if (t.includes('aura')) return 'badge-aura';
+    if (t.includes('queueing') || t.includes('executed') || t.includes('dequeueing')) return 'badge-reaction';
     return 'badge-default';
 }
 
@@ -1164,6 +1564,33 @@ window.showPayloadModal = function (eventId) {
 
     dataModal.classList.remove('hidden');
 }
+
+// ---------------------------------------------------------------------------
+// Replay → table sync: scroll the events table to the event closest to time t
+// in the given file, and flash-highlight it.
+// ---------------------------------------------------------------------------
+window.TLVsyncHighlightId = null;
+window.syncTableToTime = function (file, t) {
+    if (!filteredEvents.length) return;
+    let bestIdx = -1;
+    let bestDiff = Infinity;
+    for (let i = 0; i < filteredEvents.length; i++) {
+        const ev = filteredEvents[i];
+        if (ev.file !== file) continue;
+        const evT = ev.tNum;
+        if (isNaN(evT)) continue;
+        const diff = Math.abs(evT - t);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+        }
+        if (evT > t + 5) break; // events are time-ordered within a file block
+    }
+    if (bestIdx === -1) return;
+    window.TLVsyncHighlightId = filteredEvents[bestIdx].id;
+    tableContainer.scrollTop = Math.max(0, bestIdx * ROW_HEIGHT - tableContainer.clientHeight / 3);
+    renderVirtualTable();
+};
 
 // Utility
 function showLoader(show) {
@@ -1188,7 +1615,7 @@ function exportToCsv() {
     if (filteredEvents.length === 0) return alert("No events to export.");
 
     // Headers
-    let headers = ['Time', 'Event Type', 'Source Name', 'Source ID', 'Target Name', 'Target ID', ...customColumns, 'Raw Payload'];
+    let headers = ['Time', 'Event Type', 'Source Name', 'Source ID', 'Target Name', 'Target ID', ...customColumns, ...calcColumns.map(c => `calc:${c}`), 'Raw Payload'];
     let csvRows = [headers.join(',')];
 
     filteredEvents.forEach(ev => {
@@ -1200,6 +1627,10 @@ function exportToCsv() {
             ev.targetName,
             ev.targetId,
             ...customColumns.map(c => ev.payload[c] ? `"${ev.payload[c].replace(/"/g, '""')}"` : ''),
+            ...calcColumns.map(c => {
+                const fn = COMPUTED_COLUMNS[c];
+                return fn ? `"${String(fn(ev)).replace(/"/g, '""')}"` : '';
+            }),
             `"${ev.payloadRaw.replace(/"/g, '""')}"` // Escape quotes
         ];
         csvRows.push(row.join(','));
