@@ -13,7 +13,7 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 
-<body class="dark-theme">
+<body class="dark-theme no-data">
     <div class="app-container">
         <!-- Header Container -->
         <header class="glass-header">
@@ -21,14 +21,17 @@
                 <div class="logo">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                         stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                        <polyline points="14 2 14 8 20 8"></polyline>
-                        <line x1="16" y1="13" x2="8" y2="13"></line>
-                        <line x1="16" y1="17" x2="8" y2="17"></line>
-                        <polyline points="10 9 9 9 8 9"></polyline>
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
                     </svg>
                     <h1>Tensor Log Vibes</h1>
                 </div>
+
+                <nav class="tab-bar" id="tabBar">
+                    <button class="tab-btn active" data-tab="events">Events</button>
+                    <button class="tab-btn" data-tab="replay">Replay</button>
+                    <button class="tab-btn" data-tab="reactions">Reactions</button>
+                    <button class="tab-btn" data-tab="rotation">Rotation</button>
+                </nav>
 
                 <div class="file-upload-container">
                     <input type="file" id="logFileInput" accept=".lua,.txt,.log" multiple class="hidden-input">
@@ -45,8 +48,8 @@
                 </div>
             </div>
 
-            <!-- Global Controls -->
-            <div class="controls-panel">
+            <!-- Global Controls (Events tab) -->
+            <div class="controls-panel" id="controlsPanel">
                 <div class="search-box">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="11" cy="11" r="8"></circle>
@@ -108,7 +111,11 @@
                                     <button class="btn secondary-btn"
                                         onclick="toggleAllCheckboxes('entityOptionsContainer', activeFilters.entities, false)">None</button>
                                     <button class="btn secondary-btn" id="selectPlayersBtn"
-                                        title="Select known players (ContentID 0)">Players Only</button>
+                                        title="Select known players (ContentID 0)">Players</button>
+                                    <button class="btn secondary-btn" id="selectPetsBtn"
+                                        title="Select pets/companions (detected from targeting behavior — entities that attack hostiles or place friendly AOEs)">Pets</button>
+                                    <button class="btn secondary-btn" id="selectEnemiesBtn"
+                                        title="Select hostile entities (non-player, non-pet)">Enemies</button>
                                     <button class="btn secondary-btn" id="selectNonPlayersBtn"
                                         title="Select everything EXCEPT players">Non-Players</button>
                                 </div>
@@ -124,6 +131,14 @@
                     <div class="custom-col-box">
                         <input type="text" id="customColInput" placeholder="Add new Column...">
                         <button id="addCustomColBtn" class="btn secondary-btn" title="Add Column">+</button>
+                    </div>
+                    <div class="custom-select" id="calcColSelectContainer">
+                        <div class="select-selected" id="calcColSelectText">+ Calc Column</div>
+                        <div class="select-items select-hide" id="calcColDropdown">
+                            <div class="select-options" id="calcColOptionsContainer">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
                     </div>
                     <button id="exportCsvBtn" class="btn secondary-btn" title="Export to CSV">CSV</button>
                     <button id="exportJsonBtn" class="btn secondary-btn" title="Export to JSON">JSON</button>
@@ -151,30 +166,177 @@
                 </div>
                 <h2>No Logs Loaded</h2>
                 <p>Upload log files to start analyzing parser data.</p>
-                <div class="keyboard-hint">Built on pure vibes :3</div>
+                <div class="keyboard-hint">Built on pure vibes :3 &nbsp;&mdash;&nbsp; now with replay</div>
             </div>
 
-            <div class="table-container hidden" id="tableContainer">
-                <table class="event-table" id="eventTable">
-                    <thead>
-                        <tr id="tableHeaderRow">
-                            <th class="col-pin">Pin</th>
-                            <th class="col-file">File</th>
-                            <th class="col-time">Time</th>
-                            <th class="col-time-delta" title="Time since previous visible event">Δ Time</th>
-                            <th class="col-type">Event Type</th>
-                            <th class="col-source">Source Name/ID</th>
-                            <th class="col-target">Target Name/ID</th>
-                            <!-- Dynamic Columns will be inserted here -->
-                            <th class="col-details">Details / Payload</th>
-                        </tr>
-                    </thead>
-                    <tbody id="pinnedTableBody">
-                    </tbody>
-                    <tbody id="eventTableBody">
-                        <!-- Rows populated by JS -->
-                    </tbody>
-                </table>
+            <!-- Pull Summary Cards -->
+            <div id="summaryStrip" class="summary-strip hidden"></div>
+
+            <!-- ===================== EVENTS TAB ===================== -->
+            <div id="eventsView" class="tab-view">
+                <div class="events-split">
+                    <div class="table-container hidden" id="tableContainer">
+                        <table class="event-table" id="eventTable">
+                            <thead>
+                                <tr id="tableHeaderRow">
+                                    <th class="col-pin">Pin</th>
+                                    <th class="col-file">File</th>
+                                    <th class="col-time">Time</th>
+                                    <th class="col-time-delta" title="Time since previous visible event">Δ Time</th>
+                                    <th class="col-type">Event Type</th>
+                                    <th class="col-source">Source Name/ID</th>
+                                    <th class="col-target">Target Name/ID</th>
+                                    <!-- Dynamic Columns will be inserted here -->
+                                    <th class="col-details">Details / Payload</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pinnedTableBody">
+                            </tbody>
+                            <tbody id="eventTableBody">
+                                <!-- Rows populated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Cast Consequence Inspector Drawer -->
+                    <aside id="inspectorPanel" class="inspector-panel hidden">
+                        <div class="inspector-header">
+                            <div>
+                                <h3 id="inspectorTitle">Cast Inspector</h3>
+                                <span id="inspectorSubtitle" class="inspector-subtitle"></span>
+                            </div>
+                            <div class="inspector-controls">
+                                <label title="Seconds after the cast to aggregate">Window
+                                    <input type="number" id="inspectorWindow" value="8" min="1" max="60" step="1">s
+                                </label>
+                                <button class="close-btn" id="inspectorClose">&times;</button>
+                            </div>
+                        </div>
+                        <div class="inspector-body" id="inspectorBody"></div>
+                    </aside>
+                </div>
+            </div>
+
+            <!-- ===================== REPLAY TAB ===================== -->
+            <div id="replayView" class="tab-view hidden">
+                <div class="replay-layout">
+                    <div class="replay-toolbar">
+                        <select id="replayFileSelect" class="replay-select" title="Pull to replay"></select>
+                        <button id="replayPlayBtn" class="btn primary-btn replay-play">▶</button>
+                        <select id="replaySpeedSelect" class="replay-select" title="Playback speed">
+                            <option value="0.25">0.25×</option>
+                            <option value="0.5">0.5×</option>
+                            <option value="1" selected>1×</option>
+                            <option value="2">2×</option>
+                            <option value="4">4×</option>
+                        </select>
+                        <span id="replayClock" class="replay-clock">0:00.0</span>
+                        <input type="range" id="replayScrub" class="replay-scrub" min="0" max="100" step="0.05"
+                            value="0">
+                        <span id="replayDuration" class="replay-clock replay-duration">0:00</span>
+                        <div class="replay-toggles">
+                            <label title="Show each player's movement path over the last few seconds"><input
+                                    type="checkbox" id="tglTrails"> Trails</label>
+                            <label title="Name labels on party members"><input type="checkbox"
+                                    id="tglPlayerLabels" checked> Player Labels</label>
+                            <label title="Name labels on bosses and adds"><input type="checkbox" id="tglNpcLabels"
+                                    checked> NPC Labels</label>
+                            <label title="Text on effects: AOE names, tether IDs, cast bars"><input type="checkbox"
+                                    id="tglLabels" checked> Effect Labels</label>
+                            <label><input type="checkbox" id="tglAoes" checked> AOEs</label>
+                            <label><input type="checkbox" id="tglCasts" checked> Casts</label>
+                            <label
+                                title="When you scrub or step the replay, auto-scroll the Events table to the same moment"><input
+                                    type="checkbox" id="tglSync"> Sync Table</label>
+                        </div>
+                        <button id="replayResetViewBtn" class="btn secondary-btn"
+                            title="Reset camera zoom and pan back to the fitted arena view">Reset View</button>
+                    </div>
+                    <div class="replay-stage">
+                        <canvas id="replayCanvas"></canvas>
+                        <div id="replayEventFeed" class="replay-event-feed"></div>
+                        <div class="replay-hint">wheel: zoom &nbsp; drag: pan &nbsp; click entity: filter table &nbsp;
+                            space: play/pause &nbsp; ←/→: step &nbsp; AOE shapes are best-effort from castType</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===================== REACTIONS TAB ===================== -->
+            <div id="reactionsView" class="tab-view hidden">
+                <div class="panel-toolbar">
+                    <select id="reactionsFileSelect" class="replay-select" title="Pull"></select>
+                    <input type="text" id="reactionsSearch" class="panel-search" placeholder="Filter reactions...">
+                    <div class="lifecycle-stats" id="lifecycleStats"></div>
+                </div>
+                <div class="reactions-layout">
+                    <div class="gantt-wrap">
+                        <canvas id="ganttCanvas"></canvas>
+                    </div>
+                    <div class="reactions-tables">
+                        <div class="reactions-table-wrap">
+                            <h3>Reaction Instances <span class="muted">(double-click a row to jump replay)</span></h3>
+                            <table class="event-table mini-table" id="reactionInstanceTable">
+                                <thead>
+                                    <tr>
+                                        <th>Reaction</th>
+                                        <th>Queued</th>
+                                        <th>Executed</th>
+                                        <th>Latency</th>
+                                        <th>Outcome</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="reactionInstanceBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="reactions-table-wrap">
+                            <h3>Per-Reaction Summary</h3>
+                            <table class="event-table mini-table" id="reactionSummaryTable">
+                                <thead>
+                                    <tr>
+                                        <th>Reaction</th>
+                                        <th>Queued</th>
+                                        <th>Executed</th>
+                                        <th>Never Exec</th>
+                                        <th>Med. Latency</th>
+                                        <th>Max Latency</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="reactionSummaryBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===================== ROTATION TAB ===================== -->
+            <div id="rotationView" class="tab-view hidden">
+                <div class="panel-toolbar">
+                    <select id="rotationFileSelect" class="replay-select" title="Pull"></select>
+                    <select id="rotationPlayerSelect" class="replay-select" title="Player"></select>
+                    <label class="regex-toggle" title="Hide auto-attacks">
+                        <input type="checkbox" id="rotationHideAuto" checked> Hide Auto-attacks
+                    </label>
+                    <label class="regex-toggle" title="Row of buffs/debuffs applied to this player">
+                        <input type="checkbox" id="rotationShowBuffs" checked> Buffs
+                    </label>
+                    <div class="actions-group">
+                        <button id="rotationZoomOut" class="btn secondary-btn" title="Zoom out">−</button>
+                        <button id="rotationZoomIn" class="btn secondary-btn" title="Zoom in">+</button>
+                    </div>
+                    <span class="muted" id="rotationStatus"></span>
+                </div>
+                <div class="rotation-scroll" id="rotationScroll">
+                    <div class="empty-mini" id="rotationEmpty">Load a pull to see a player's cast timeline.</div>
+                    <div class="rotation-track hidden" id="rotationTrack"></div>
+                </div>
+                <div class="rotation-legend">
+                    <span><span class="legend-swatch legend-gcd"></span> GCD row (weaponskills / spells in
+                        sequence)</span>
+                    <span><span class="legend-swatch legend-ogcd"></span> one row per oGCD, shaded bar = its
+                        cooldown</span>
+                    <span class="muted">click an icon to jump the replay · icons &amp; recast data from xivapi.com
+                        (cached locally)</span>
+                </div>
             </div>
         </main>
     </div>
@@ -193,6 +355,9 @@
     </div>
 
     <script src="app.js"></script>
+    <script src="analysis.js"></script>
+    <script src="replay.js"></script>
+    <script src="rotation.js"></script>
 </body>
 
 </html>
