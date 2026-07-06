@@ -111,7 +111,9 @@ window.TLV = { byFile: new Map(), metas: [] };
                         srcId: ev.payload['Entity ID'] || '',
                         srcName: ev.payload['Entity Name'] || '',
                         tgtId: ev.payload['Main Target ID'] || '',
-                        isBoss: cid !== undefined && cid !== '0'
+                        nt: parseInt(ev.payload['Num Targets'], 10) || 0,
+                        isBoss: cid !== undefined && cid !== '0',
+                        evId: ev.id
                     });
                     break;
                 }
@@ -124,12 +126,13 @@ window.TLV = { byFile: new Map(), metas: [] };
                         dur: parseFloat(ev.payload['Channel Time Max']) || 0,
                         srcId: ev.payload['Caster ID'] || '',
                         srcName: ev.payload['Caster Name'] || '',
-                        isBoss: cid !== undefined && cid !== '0'
+                        isBoss: cid !== undefined && cid !== '0',
+                        evId: ev.id
                     });
                     break;
                 }
                 case 'onAOECreate': {
-                    if (hasT && ev.payloadObj) A.aoes.push({ t, o: ev.payloadObj });
+                    if (hasT && ev.payloadObj) A.aoes.push({ t, o: ev.payloadObj, evId: ev.id });
                     break;
                 }
                 case 'OnEntityMarkerAdd': {
@@ -317,6 +320,29 @@ window.TLV = { byFile: new Map(), metas: [] };
             for (const a of A.aoes) {
                 const eid = String(a.o.entityID || '');
                 if (a.o.friendly === true && eid && !hostileIds.has(eid)) petSeedIds.add(eid);
+            }
+            // Support pets (Liturgic Bell etc): non-player entities whose casts
+            // only ever main-target themselves or players, with multi-target
+            // casts or an action name a player also cast — and no hostile
+            // evidence (anything that harms players always logs damage).
+            const supportCandidates = new Map(); // srcId -> {ok, maxNt, names}
+            for (const c of A.casts) {
+                if (!c.isBoss || !c.srcId) continue;
+                let cand = supportCandidates.get(c.srcId);
+                if (!cand) {
+                    cand = { ok: true, maxNt: 0, names: new Set() };
+                    supportCandidates.set(c.srcId, cand);
+                }
+                const tgt = c.tgtId ? A.entities.get(c.tgtId) : null;
+                if (!(c.tgtId === c.srcId || (tgt && tgt.isPlayer))) cand.ok = false;
+                cand.maxNt = Math.max(cand.maxNt, c.nt);
+                if (c.name) cand.names.add(c.name);
+            }
+            const playerCastNames = new Set(A.casts.filter(c => !c.isBoss && c.name).map(c => c.name));
+            for (const [id, cand] of supportCandidates) {
+                if (!cand.ok || hostileIds.has(id)) continue;
+                const nameOverlap = [...cand.names].some(n => playerCastNames.has(n));
+                if (cand.maxNt >= 4 || nameOverlap) petSeedIds.add(id);
             }
             const petNames = new Set();
             petSeedIds.forEach(id => {

@@ -17,6 +17,7 @@
     const fileSelect = document.getElementById('replayFileSelect');
     const playBtn = document.getElementById('replayPlayBtn');
     const speedSelect = document.getElementById('replaySpeedSelect');
+    const timeModeSel = document.getElementById('replayTimeMode');
     const clockEl = document.getElementById('replayClock');
     const durationEl = document.getElementById('replayDuration');
     const scrub = document.getElementById('replayScrub');
@@ -26,9 +27,17 @@
     const tglLabels = document.getElementById('tglLabels');
     const tglPlayerLabels = document.getElementById('tglPlayerLabels');
     const tglNpcLabels = document.getElementById('tglNpcLabels');
+    const tglPetLabels = document.getElementById('tglPetLabels');
     const tglAoes = document.getElementById('tglAoes');
     const tglCasts = document.getElementById('tglCasts');
+    const tglMarkers = document.getElementById('tglMarkers');
     const tglSync = document.getElementById('tglSync');
+    const labelSizeSel = document.getElementById('replayLabelSize');
+
+    // label size multiplier + clickable label regions (rebuilt every render)
+    let labelScale = 1;
+    let labelHits = [];
+    function lpx(base) { return Math.round(base * labelScale); }
 
     const PLAYER_COLORS = ['#4fc3f7', '#3b82f6', '#10b981', '#84cc16', '#ef4444', '#f97316', '#eab308', '#a855f7'];
     const TRAIL_SECONDS = 6;
@@ -56,6 +65,60 @@
     function lowerBound(arr, t) { return TLVAnalysis.lowerBound(arr, t); }
     function fmtTime(t) { return TLVAnalysis.fmtTime(t); }
 
+    // ---------------- clock modes ----------------
+    // 'sync' = raw synced-timer seconds (what reaction timelines use)
+    // 'real' = in-game duty timer (m:ss), mapped through the sync offsets
+    let realMap = []; // [{t, rt}] segment starts, sorted by t
+
+    function buildRealMap(A) {
+        realMap = [];
+        let lastOffset = null;
+        let lastT = -Infinity;
+        let lastRt = -Infinity;
+        for (const ev of A.eventsIdx) {
+            if (isNaN(ev.tNum) || isNaN(ev.rtNum)) continue;
+            // post-wipe lines freeze the synced stamp and reset real time to
+            // 0.000 — require BOTH clocks to stay monotonic
+            if (ev.tNum < lastT - 0.001 || ev.rtNum < lastRt - 0.001) continue;
+            lastT = ev.tNum;
+            lastRt = ev.rtNum;
+            const offset = ev.rtNum - ev.tNum;
+            if (lastOffset === null || Math.abs(offset - lastOffset) > 0.05) {
+                realMap.push({ t: ev.tNum, rt: ev.rtNum });
+                lastOffset = offset;
+            }
+        }
+    }
+
+    function realOf(t) {
+        if (!realMap.length) return t;
+        let lo = 0, hi = realMap.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (realMap[mid].t <= t) lo = mid;
+            else hi = mid - 1;
+        }
+        const seg = realMap[lo];
+        return t < seg.t ? t : seg.rt + (t - seg.t);
+    }
+
+    function fmtClock(t) {
+        return timeModeSel.value === 'real' ? fmtTime(realOf(t)) : t.toFixed(1);
+    }
+
+    function refreshClockLabels() {
+        const real = timeModeSel.value === 'real';
+        clockEl.title = real ? 'In-game duty timer (real time)' : 'Synced timer (raw seconds)';
+        durationEl.title = clockEl.title;
+        if (S.A) durationEl.textContent = fmtClock(S.A.duration);
+    }
+
+    timeModeSel.addEventListener('change', () => {
+        refreshClockLabels();
+        S.lastFeedSig = ''; // feed timestamps follow the mode
+        requestRender();
+    });
+
     // ---------------- data / lifecycle ----------------
     function onDataLoaded() {
         if (fileSelect.options.length) {
@@ -77,7 +140,8 @@
         }
         if (S.A) {
             scrub.max = S.A.duration;
-            durationEl.textContent = fmtTime(S.A.duration);
+            buildRealMap(S.A);
+            refreshClockLabels();
         }
         updatePlayBtn();
         requestRender();
@@ -120,8 +184,13 @@
         if (tglSync.checked && S.file) window.syncTableToTime(S.file, S.t);
     });
 
-    [tglTrails, tglLabels, tglPlayerLabels, tglNpcLabels, tglAoes, tglCasts].forEach(el =>
+    [tglTrails, tglLabels, tglPlayerLabels, tglNpcLabels, tglPetLabels, tglAoes, tglCasts, tglMarkers].forEach(el =>
         el.addEventListener('change', requestRender));
+    labelSizeSel.addEventListener('input', () => {
+        const v = parseFloat(labelSizeSel.value);
+        labelScale = isNaN(v) ? 1 : Math.max(0.4, Math.min(4, v));
+        requestRender();
+    });
 
     document.getElementById('replayResetViewBtn').addEventListener('click', () => {
         S.zoom = 1; S.panX = 0; S.panY = 0;
@@ -222,10 +291,27 @@
         S.dragging = false;
     });
 
+    function labelHitAt(mx, my) {
+        // topmost = drawn last
+        for (let i = labelHits.length - 1; i >= 0; i--) {
+            const h = labelHits[i];
+            if (mx >= h.x0 && mx <= h.x1 && my >= h.y0 && my <= h.y1) return h;
+        }
+        return null;
+    }
+
     function handleCanvasClick(e) {
         if (!S.A) return;
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+        // cast / effect labels open the raw event in the docked side panel
+        const hit = labelHitAt(mx, my);
+        if (hit && hit.evId !== undefined) {
+            showReplayDetail(hit.evId);
+            return;
+        }
+
         const vp = viewParams();
         let best = null, bestD = 14;
         for (const [, ent] of S.A.entities) {
@@ -239,6 +325,12 @@
             window.toggleEntityFilterExternal(best.name || best.id);
         }
     }
+
+    canvas.addEventListener('mousemove', e => {
+        if (!S.A || S.dragging) return;
+        const rect = canvas.getBoundingClientRect();
+        canvas.style.cursor = labelHitAt(e.clientX - rect.left, e.clientY - rect.top) ? 'pointer' : 'crosshair';
+    });
 
     // ---------------- entity position lookup ----------------
     function entityPosAt(ent, t) {
@@ -303,7 +395,7 @@
         if (canvas.clientWidth < 10) resizeCanvas();
         const vp = viewParams();
         ctx.clearRect(0, 0, vp.w, vp.h);
-        clockEl.textContent = fmtTime(S.t);
+        clockEl.textContent = fmtClock(S.t);
         scrub.value = S.t;
 
         if (!S.A) {
@@ -315,12 +407,13 @@
             return;
         }
 
+        labelHits = [];
         drawArena(vp);
         if (tglAoes.checked) drawAoes(vp);
         drawTethers(vp);
         if (tglTrails.checked) drawTrails(vp);
         drawEntities(vp);
-        drawMarkers(vp);
+        if (tglMarkers.checked) drawMarkers(vp);
         if (tglCasts.checked) drawChannels(vp);
         drawDeaths(vp);
         updateFeed();
@@ -425,9 +518,13 @@
             if (tglLabels.checked && o.aoeName) {
                 ctx.save();
                 ctx.fillStyle = 'rgba(248,113,113,0.9)';
-                ctx.font = '10px Inter, sans-serif';
+                const fpx = lpx(10);
+                ctx.font = `${fpx}px Inter, sans-serif`;
                 ctx.textAlign = 'center';
-                ctx.fillText(`${o.aoeName} (${(t0 + dur - S.t).toFixed(1)}s)`, sx, sy - 6);
+                const txt = `${o.aoeName} (${(t0 + dur - S.t).toFixed(1)}s)`;
+                const tw = ctx.measureText(txt).width;
+                ctx.fillText(txt, sx, sy - 6);
+                labelHits.push({ x0: sx - tw / 2, x1: sx + tw / 2, y0: sy - 6 - fpx, y1: sy - 2, evId: a.evId });
                 ctx.textAlign = 'left';
                 ctx.restore();
             }
@@ -458,7 +555,7 @@
             ctx.setLineDash([]);
             if (tglLabels.checked) {
                 ctx.fillStyle = 'rgba(245,158,11,0.9)';
-                ctx.font = '10px Inter, sans-serif';
+                ctx.font = `${lpx(10)}px Inter, sans-serif`;
                 ctx.fillText(`tether ${th.tetherId}`, (x1 + x2) / 2 + 4, (y1 + y2) / 2 - 4);
             }
             ctx.restore();
@@ -521,9 +618,9 @@
             ctx.restore();
             // heading tick
             drawHeadingTick(vp, sx, sy, p.h, 9, isPet ? 'rgba(45,212,191,0.8)' : 'rgba(249,115,22,0.8)');
-            if (tglNpcLabels.checked && ent.name) {
+            if ((isPet ? tglPetLabels.checked : tglNpcLabels.checked) && ent.name) {
                 ctx.fillStyle = isPet ? 'rgba(94,234,212,0.85)' : 'rgba(251,146,60,0.85)';
-                ctx.font = '10px Inter, sans-serif';
+                ctx.font = `${lpx(10)}px Inter, sans-serif`;
                 ctx.fillText(ent.name, sx + 8, sy - 6);
             }
         }
@@ -556,7 +653,7 @@
             ctx.restore();
             if (tglPlayerLabels.checked && ent.name) {
                 ctx.fillStyle = 'rgba(240,242,245,0.85)';
-                ctx.font = '10px Inter, sans-serif';
+                ctx.font = `${lpx(10)}px Inter, sans-serif`;
                 ctx.fillText(ent.name.replace(/^P\d_/, ''), sx + 8, sy + 3);
             }
         }
@@ -593,7 +690,7 @@
             ctx.arc(sx, sy, pulse, 0, Math.PI * 2);
             ctx.stroke();
             ctx.fillStyle = 'rgba(250,204,21,0.95)';
-            ctx.font = 'bold 10px Inter, sans-serif';
+            ctx.font = `bold ${lpx(10)}px Inter, sans-serif`;
             ctx.textAlign = 'center';
             ctx.fillText(`M${m.markerId}`, sx, sy - pulse - 3);
             ctx.textAlign = 'left';
@@ -619,9 +716,13 @@
             ctx.stroke();
             if (tglLabels.checked && c.name) {
                 ctx.fillStyle = 'rgba(196,181,253,0.95)';
-                ctx.font = '10px Inter, sans-serif';
+                const fpx = lpx(10);
+                ctx.font = `${fpx}px Inter, sans-serif`;
                 ctx.textAlign = 'center';
-                ctx.fillText(`${c.name} ${(c.t + c.dur - S.t).toFixed(1)}s`, sx, sy + 22);
+                const txt = `${c.name} ${(c.t + c.dur - S.t).toFixed(1)}s`;
+                const tw = ctx.measureText(txt).width;
+                ctx.fillText(txt, sx, sy + 22);
+                labelHits.push({ x0: sx - tw / 2, x1: sx + tw / 2, y0: sy + 22 - fpx, y1: sy + 26, evId: c.evId });
                 ctx.textAlign = 'left';
             }
             ctx.restore();
@@ -645,6 +746,29 @@
             ctx.textAlign = 'left';
             ctx.restore();
         }
+    }
+
+    // ---------------- docked event detail panel ----------------
+    const detailEl = document.getElementById('replayDetail');
+    const detailTitle = document.getElementById('replayDetailTitle');
+    const detailBody = document.getElementById('replayDetailBody');
+    document.getElementById('replayDetailClose').addEventListener('click', () => {
+        detailEl.classList.add('hidden');
+    });
+
+    function showReplayDetail(evId) {
+        // parsedEvents is a top-level `let` in app.js: visible as a bare
+        // identifier across classic scripts, but NOT as window.parsedEvents
+        const ev = (typeof parsedEvents !== 'undefined') ? parsedEvents[evId] : null;
+        if (!ev) return;
+        detailTitle.textContent = `${ev.type} @ ${ev.time}`;
+        if (ev.isMultiline) {
+            detailBody.textContent = ev.payloadRaw;
+        } else {
+            const lines = Object.entries(ev.payload).map(([k, v]) => `${k}: ${v}`);
+            detailBody.textContent = lines.length ? lines.join('\n') : ev.payloadRaw;
+        }
+        detailEl.classList.remove('hidden');
     }
 
     // ---------------- rolling event feed ----------------
@@ -681,7 +805,7 @@
         if (sig === S.lastFeedSig) return;
         S.lastFeedSig = sig;
         feedEl.innerHTML = trimmed.map(x =>
-            `<div class="feed-line ${x.cls}"><span class="feed-t">${fmtTime(x.t)}</span> ${escapeHtml(x.txt)}</div>`
+            `<div class="feed-line ${x.cls}"><span class="feed-t">${fmtClock(x.t)}</span> ${escapeHtml(x.txt)}</div>`
         ).join('');
     }
 
