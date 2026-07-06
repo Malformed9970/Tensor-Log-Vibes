@@ -31,6 +31,7 @@
     const tglAoes = document.getElementById('tglAoes');
     const tglCasts = document.getElementById('tglCasts');
     const tglMarkers = document.getElementById('tglMarkers');
+    const tglWaymarks = document.getElementById('tglWaymarks');
     const tglSync = document.getElementById('tglSync');
     const labelSizeSel = document.getElementById('replayLabelSize');
 
@@ -184,7 +185,7 @@
         if (tglSync.checked && S.file) window.syncTableToTime(S.file, S.t);
     });
 
-    [tglTrails, tglLabels, tglPlayerLabels, tglNpcLabels, tglPetLabels, tglAoes, tglCasts, tglMarkers].forEach(el =>
+    [tglTrails, tglLabels, tglPlayerLabels, tglNpcLabels, tglPetLabels, tglAoes, tglCasts, tglMarkers, tglWaymarks].forEach(el =>
         el.addEventListener('change', requestRender));
     labelSizeSel.addEventListener('input', () => {
         const v = parseFloat(labelSizeSel.value);
@@ -409,6 +410,7 @@
 
         labelHits = [];
         drawArena(vp);
+        if (tglWaymarks.checked) drawWaymarks(vp);
         if (tglAoes.checked) drawAoes(vp);
         drawTethers(vp);
         if (tglTrails.checked) drawTrails(vp);
@@ -422,7 +424,8 @@
     function drawArena(vp) {
         const A = S.A;
         ctx.save();
-        // rings every 5y
+        // rings every 5y (heuristic bounds — the log's Arena header radius is
+        // the kill wall, not the playable floor, so it isn't drawn)
         for (let r = 5; r <= A.viewRadius + 5; r += 5) {
             const [sx, sy] = w2s(vp, A.center.x, A.center.z);
             ctx.beginPath();
@@ -448,6 +451,46 @@
         ctx.fillText('W', cx - ext - 10, cy + 4);
         ctx.fillText('E', cx + ext + 10, cy + 4);
         ctx.textAlign = 'left';
+        ctx.restore();
+    }
+
+    // FFXIV waymark colors: A/1 red, B/2 yellow, C/3 blue, D/4 purple.
+    // Letters render as circles, numbers as squares (like in game).
+    const WAYMARK_COLORS = {
+        A: '#ef4444', B: '#eab308', C: '#3b82f6', D: '#a855f7',
+        '1': '#ef4444', '2': '#eab308', '3': '#3b82f6', '4': '#a855f7'
+    };
+
+    function drawWaymarks(vp) {
+        const wm = S.A.waymarks;
+        if (!wm) return;
+        ctx.save();
+        for (const [key, p] of Object.entries(wm)) {
+            const [sx, sy] = w2s(vp, p.x, p.z);
+            const r = Math.max(6, 1.1 * vp.scale);
+            const color = WAYMARK_COLORS[key] || '#9ba1a6';
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.85;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            if (/[A-D]/.test(key)) {
+                ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            } else {
+                ctx.rect(sx - r, sy - r, r * 2, r * 2);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 0.15;
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.globalAlpha = 0.95;
+            ctx.fillStyle = color;
+            ctx.font = `bold ${lpx(11)}px Inter, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(key, sx, sy);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+        }
         ctx.restore();
     }
 

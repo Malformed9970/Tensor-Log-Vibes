@@ -66,6 +66,8 @@ window.TLV = { byFile: new Map(), metas: [] };
                 eventsIdx: [],         // refs to this file's events, log order
                 duration: 0,           // mechanic (synced) time — drives replay/gantt/compare
                 durationReal: 0,       // real time — actual pull length
+                arenaRadius: 0,        // authoritative bounds from the log header (0 = unknown)
+                waymarks: null,
                 center: { x: 100, z: 100 },
                 viewRadius: 25,
                 progPoint: null
@@ -266,6 +268,9 @@ window.TLV = { byFile: new Map(), metas: [] };
                     }
                 }
             }
+            // NOTE: the "[AnyoneCore] Arena:" header radius is unreliable (it
+            // reports the kill-wall bound, not the playable floor — e.g. 28 vs
+            // a real 20), so player-position heuristics stay authoritative.
             if (n > 20) {
                 A.center = { x: Math.round(sumX / n * 2) / 2, z: Math.round(sumZ / n * 2) / 2 };
             }
@@ -282,6 +287,7 @@ window.TLV = { byFile: new Map(), metas: [] };
                 dists.sort((a, b) => a - b);
                 A.viewRadius = Math.max(15, Math.ceil(dists[Math.floor(dists.length * 0.97)]) + 4);
             }
+            A.waymarks = A.meta.waymarks || null;
 
             // ---- pet detection (behavioral, no hardcoded names) ----
             // Hostiles: damaged a player, spawned a hostile AOE, or were
