@@ -1302,6 +1302,30 @@ body.is-dragging * {
     accent-color: var(--brand-primary);
 }
 
+.label-size-box {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.label-size-box input {
+    width: 58px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 0.8rem;
+}
+
+.label-size-box input:focus {
+    outline: none;
+    border-color: var(--brand-primary);
+}
+
 .replay-stage {
     flex: 1;
     position: relative;
@@ -1315,18 +1339,72 @@ body.is-dragging * {
     cursor: crosshair;
 }
 
-.replay-event-feed {
+.replay-side {
     position: absolute;
     top: 10px;
     right: 12px;
+    bottom: 34px;
     width: 320px;
-    max-height: 60%;
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     pointer-events: none;
+}
+
+.replay-event-feed {
+    /* never squashed — the feed always gets its natural height (up to 55%) */
+    flex: 0 0 auto;
+    max-height: 55%;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
     font-size: 0.75rem;
+}
+
+.replay-detail {
+    pointer-events: auto;
+    /* content-sized into whatever space the feed leaves; compresses and
+       scrolls internally when the window is small */
+    flex: 0 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: rgba(15, 17, 21, 0.88);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.replay-detail-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 6px 4px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex-shrink: 0;
+}
+
+.replay-detail-head .close-btn {
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+.replay-detail pre {
+    margin: 0;
+    padding: 8px 10px;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #a5b4fc;
+    white-space: pre-wrap;
+    word-break: break-word;
+    scrollbar-width: thin;
 }
 
 .feed-line {

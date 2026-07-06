@@ -230,7 +230,12 @@
                             <option value="2">2×</option>
                             <option value="4">4×</option>
                         </select>
-                        <span id="replayClock" class="replay-clock">0:00.0</span>
+                        <select id="replayTimeMode" class="replay-select"
+                            title="Clock display: Sync = raw synced-timer seconds (what reaction timelines use). Duty = the in-game pull timer (real time, m:ss).">
+                            <option value="sync" selected>Sync (s)</option>
+                            <option value="real">Duty timer</option>
+                        </select>
+                        <span id="replayClock" class="replay-clock" title="Synced timer (raw seconds)">0.0</span>
                         <input type="range" id="replayScrub" class="replay-scrub" min="0" max="100" step="0.05"
                             value="0">
                         <span id="replayDuration" class="replay-clock replay-duration">0:00</span>
@@ -239,24 +244,43 @@
                                     type="checkbox" id="tglTrails"> Trails</label>
                             <label title="Name labels on party members"><input type="checkbox"
                                     id="tglPlayerLabels" checked> Player Labels</label>
-                            <label title="Name labels on bosses and adds"><input type="checkbox" id="tglNpcLabels"
-                                    checked> NPC Labels</label>
-                            <label title="Text on effects: AOE names, tether IDs, cast bars"><input type="checkbox"
-                                    id="tglLabels" checked> Effect Labels</label>
+                            <label title="Name labels on bosses and adds (pets excluded)"><input type="checkbox"
+                                    id="tglNpcLabels" checked> NPC Labels</label>
+                            <label title="Name labels on detected pets/companions"><input type="checkbox"
+                                    id="tglPetLabels"> Pet Labels</label>
+                            <label
+                                title="Text on effects: AOE names, tether IDs, cast bars. Click a cast/AOE label to open its raw event."><input
+                                    type="checkbox" id="tglLabels" checked> Effect Labels</label>
                             <label><input type="checkbox" id="tglAoes" checked> AOEs</label>
                             <label><input type="checkbox" id="tglCasts" checked> Casts</label>
+                            <label
+                                title="Head marker signs (M<id>) with pulsing ring, shown for 5s after application"><input
+                                    type="checkbox" id="tglMarkers" checked> Headmarkers</label>
                             <label
                                 title="When you scrub or step the replay, auto-scroll the Events table to the same moment"><input
                                     type="checkbox" id="tglSync"> Sync Table</label>
                         </div>
+                        <label class="label-size-box" title="Label text size multiplier (e.g. 0.8, 1, 1.75)">Labels ×
+                            <input type="number" id="replayLabelSize" value="1" min="0.4" max="4" step="0.1">
+                        </label>
                         <button id="replayResetViewBtn" class="btn secondary-btn"
                             title="Reset camera zoom and pan back to the fitted arena view">Reset View</button>
                     </div>
                     <div class="replay-stage">
                         <canvas id="replayCanvas"></canvas>
-                        <div id="replayEventFeed" class="replay-event-feed"></div>
+                        <div class="replay-side">
+                            <div id="replayEventFeed" class="replay-event-feed"></div>
+                            <div id="replayDetail" class="replay-detail hidden">
+                                <div class="replay-detail-head">
+                                    <span id="replayDetailTitle"></span>
+                                    <button id="replayDetailClose" class="close-btn" title="Close">&times;</button>
+                                </div>
+                                <pre id="replayDetailBody"></pre>
+                            </div>
+                        </div>
                         <div class="replay-hint">wheel: zoom &nbsp; drag: pan &nbsp; click entity: filter table &nbsp;
-                            space: play/pause &nbsp; ←/→: step &nbsp; AOE shapes are best-effort from castType</div>
+                            click cast/AOE label: raw event &nbsp; space: play/pause &nbsp; ←/→: step &nbsp; AOE
+                            shapes are best-effort from castType</div>
                     </div>
                 </div>
             </div>
