@@ -527,7 +527,7 @@ const workerFunction = function () {
             const lines = text.split('\n');
             const fileName = file.name;
 
-            const meta = { file: fileName, dutyName: '', dutyType: '', uid: '', mapID: '', recordedUtc: '', party: [], profiles: '', hasCombatStart: false };
+            const meta = { file: fileName, dutyName: '', dutyType: '', uid: '', mapID: '', recordedUtc: '', party: [], profiles: '', hasCombatStart: false, waymarks: null, arena: null };
             fileMetas.push(meta);
 
             let currentMultilineEvent = null;
@@ -577,6 +577,21 @@ const workerFunction = function () {
                         meta.hasCombatStart = true;
                     } else if (metaContent.startsWith('Reaction profiles:')) {
                         meta.profiles = metaContent.substring('Reaction profiles:'.length).trim();
+                    } else if (metaContent.startsWith('Waymarks:')) {
+                        meta.waymarks = {};
+                        metaContent.substring('Waymarks:'.length).split('|').forEach(part => {
+                            const m = part.trim().match(/^([A-D1-4])=([\-\d.]+),([\-\d.]+),([\-\d.]+)$/);
+                            if (m) meta.waymarks[m[1]] = { x: parseFloat(m[2]), y: parseFloat(m[3]), z: parseFloat(m[4]) };
+                        });
+                    } else if (metaContent.startsWith('Arena:')) {
+                        const cm = metaContent.match(/center=([\-\d.]+),([\-\d.]+),([\-\d.]+)/);
+                        const rm = metaContent.match(/radius=([\-\d.]+)/);
+                        if (cm) {
+                            meta.arena = {
+                                x: parseFloat(cm[1]), y: parseFloat(cm[2]), z: parseFloat(cm[3]),
+                                radius: rm ? parseFloat(rm[1]) : 0
+                            };
+                        }
                     }
                 }
 
